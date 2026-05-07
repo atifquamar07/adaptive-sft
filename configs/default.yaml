@@ -1,0 +1,161 @@
+seed: 1337
+
+model:
+  name: Qwen/Qwen2.5-0.5B
+  trust_remote_code: true
+
+paths:
+  output_dir: outputs
+  data_cache_dir: outputs/data/ultrachat_sft_masked
+  warmup_dir: outputs/checkpoints/warmup
+  utility_labels: outputs/utility_labels.pt
+  utility_labels_jsonl: outputs/utility_labels.jsonl
+  evaluator: outputs/evaluator.pt
+  evaluator_metrics: outputs/evaluator_metrics.json
+  evaluator_dev_predictions: outputs/evaluator_dev_predictions.csv
+  curves_dir: outputs/curves
+  logs_dir: outputs/logs
+  plots_dir: outputs/plots
+
+data:
+  dataset_name: HuggingFaceH4/ultrachat_200k
+  split: train_sft
+  max_seq_len: 1024
+  train_pool_size: 20000
+  utility_val_size: 1000
+  test_size: 1000
+  preprocessing_margin: 1000
+  enable_synthetic_noise: false
+  noise_fraction: 0.0
+  noise_types: [shuffled_response, truncated_response, generic_response, verbose_distractor]
+  feed_noise_feature_to_evaluator: false
+
+lora:
+  r: 16
+  alpha: 32
+  dropout: 0.05
+  target_modules: [q_proj, k_proj, v_proj, o_proj]
+
+training:
+  micro_batch_size: 4
+  lr: 5.0e-5
+  weight_decay: 0.0
+  max_grad_norm: 1.0
+  warmup_steps: 200
+  continuation_steps: 1800
+  log_every: 20
+  eval_every: 100
+  eval_batches: 32
+  save_every: 0
+
+utility:
+  label_steps: [200, 600, 1000, 1400, 1800, 2000]
+  candidates_per_state: 200
+  candidate_batch_size: 4
+  val_batch_size: 4
+  val_batches_per_state: 8
+  use_gradient_features: false
+
+features:
+  use_gradient_features: false
+
+evaluator:
+  target: step_zscore_utility
+  hidden_size: 64
+  epochs: 80
+  lr: 1.0e-3
+  batch_size: 64
+  dev_fraction: 0.2
+  max_pairs_per_batch: 2048
+  loss: pairwise
+
+static_loss:
+  strategy: middle-loss
+  candidate_batches: 512
+  selected_fraction: 0.25
+  ensure_selected_steps: true
+
+static_gradient:
+  candidate_batches: 200
+  selected_fraction: 0.25
+  ensure_selected_steps: true
+
+adaptive:
+  score_source: auto
+  fallback_on_weak_evaluator: true
+  min_dev_spearman: 0.10
+  min_dev_ranking_accuracy: 0.55
+  fallback_score_source: middle-loss
+  candidate_count: 16
+  candidate_batches_k: 16
+  standardize_candidate_scores: true
+  temperature: 0.25
+  selection: softmax
+  use_gradient_features: false
+
+oracle:
+  enabled: true
+  selection: top1
+  val_gradient_refresh_steps: 1
+  candidate_count: 16
+
+diagnostics:
+  evaluator_imitation_sets: 64
+  gradient_signal_candidates: 32
+  candidate_count: 16
+  val_batch_size: 4
+
+seeds: [1, 2, 3]
+seed_aggregation:
+  threshold: null
+
+evaluation:
+  batch_size: 4
+  max_test_batches: 0
+  generate_samples: false
+  generation_count: 100
+  max_new_tokens: 128
+
+smoke:
+  output_dir: outputs/smoke
+  overrides:
+    data:
+      train_pool_size: 1000
+      utility_val_size: 100
+      test_size: 100
+      preprocessing_margin: 100
+      noise_fraction: 0.25
+    training:
+      warmup_steps: 20
+      continuation_steps: 50
+      eval_every: 10
+      eval_batches: 4
+      micro_batch_size: 2
+    utility:
+      label_steps: [20, 35, 50, 70]
+      candidates_per_state: 8
+      candidate_batch_size: 2
+      val_batch_size: 2
+      val_batches_per_state: 4
+    evaluator:
+      epochs: 20
+      batch_size: 16
+      max_pairs_per_batch: 512
+    static_loss:
+      candidate_batches: 16
+      selected_fraction: 0.5
+    static_gradient:
+      candidate_batches: 8
+      selected_fraction: 0.5
+    adaptive:
+      candidate_count: 4
+      candidate_batches_k: 4
+    oracle:
+      candidate_count: 4
+    diagnostics:
+      evaluator_imitation_sets: 8
+      gradient_signal_candidates: 8
+      candidate_count: 4
+    evaluation:
+      batch_size: 2
+      max_test_batches: 8
