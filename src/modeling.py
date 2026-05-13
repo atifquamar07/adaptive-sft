@@ -4,6 +4,9 @@ import json
 import math
 import os
 import random
+import re
+import shutil
+import subprocess
 import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
@@ -23,10 +26,16 @@ def deep_update(base: Dict[str, Any], update: Dict[str, Any]) -> Dict[str, Any]:
     return base
 
 
+def _dataset_cache_name(cfg: Dict[str, Any]) -> str:
+    dataset_name = str(cfg.get("data", {}).get("dataset_name", "dataset")).lower()
+    slug = re.sub(r"[^a-z0-9]+", "_", dataset_name).strip("_")
+    return f"{slug or 'dataset'}_sft_masked"
+
+
 def _resolve_output_paths(cfg: Dict[str, Any], output_dir: Optional[str] = None) -> None:
     out = Path(output_dir or cfg["paths"]["output_dir"])
     cfg["paths"]["output_dir"] = str(out)
-    cfg["paths"]["data_cache_dir"] = str(out / "data" / "ultrachat_sft_masked")
+    cfg["paths"]["data_cache_dir"] = str(out / "data" / _dataset_cache_name(cfg))
     cfg["paths"]["warmup_dir"] = str(out / "checkpoints" / "warmup")
     cfg["paths"]["utility_labels"] = str(out / "utility_labels.pt")
     cfg["paths"]["utility_labels_jsonl"] = str(out / "utility_labels.jsonl")
@@ -83,7 +92,36 @@ def set_seed(seed: int) -> None:
 
 
 def get_device() -> torch.device:
-    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if env_flag("ADAPTIVE_SFT_ALLOW_CPU", default=False):
+        return torch.device("cpu")
+    visible = os.environ.get("CUDA_VISIBLE_DEVICES")
+    cuda_requested = visible is not None and visible.strip() not in {"", "-1"}
+    nvidia_smi = shutil.which("nvidia-smi")
+    gpu_present = False
+    if nvidia_smi:
+        try:
+            result = subprocess.run(
+                [nvidia_smi, "-L"],
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=5,
+            )
+            gpu_present = result.returncode == 0 and bool(result.stdout.strip())
+        except Exception:
+            gpu_present = False
+    if cuda_requested or gpu_present:
+        raise RuntimeError(
+            "CUDA devices are visible, but torch.cuda.is_available() is false. "
+            "This usually means the installed PyTorch CUDA wheel is incompatible with the NVIDIA driver. "
+            f"torch={torch.__version__}, torch.version.cuda={torch.version.cuda}. "
+            "Install a compatible wheel, for example the CUDA 12.8 build in requirements.txt, "
+            "or set ADAPTIVE_SFT_ALLOW_CPU=1 to run intentionally on CPU."
+        )
+    return torch.device("cpu")
 
 
 def env_flag(name: str, default: bool = False) -> bool:
@@ -97,13 +135,27 @@ def unwrap_model(model: torch.nn.Module) -> torch.nn.Module:
     return model.module if isinstance(model, torch.nn.DataParallel) else model
 
 
-def maybe_data_parallel(model: torch.nn.Module, device: torch.device) -> torch.nn.Module:
+def maybe_data_parallel(model: torch.nn.Module, device: torch.device, cfg: Dict[str, Any]) -> torch.nn.Module:
     if (
         device.type == "cuda"
         and env_flag("ADAPTIVE_SFT_DATA_PARALLEL", default=False)
         and torch.cuda.device_count() > 1
     ):
-        print(f"using DataParallel across {torch.cuda.device_count()} visible CUDA devices")
+        visible_devices = torch.cuda.device_count()
+        batch_sizes = [
+            int(cfg.get("training", {}).get("micro_batch_size", 1)),
+            int(cfg.get("utility", {}).get("candidate_batch_size", 1)),
+            int(cfg.get("utility", {}).get("val_batch_size", 1)),
+        ]
+        min_batch = min(batch_sizes)
+        if min_batch < visible_devices:
+            print(
+                "skipping DataParallel: smallest configured shared-stage batch size "
+                f"({min_batch}) is smaller than visible CUDA devices ({visible_devices})",
+                flush=True,
+            )
+            return model
+        print(f"using DataParallel across {visible_devices} visible CUDA devices", flush=True)
         return torch.nn.DataParallel(model)
     return model
 
@@ -187,7 +239,7 @@ def load_lora_model(
         model = get_peft_model(base, lora_cfg)
 
     model.to(device)
-    model = maybe_data_parallel(model, device)
+    model = maybe_data_parallel(model, device, cfg)
     model.train(train)
     tokenizer = load_tokenizer(cfg)
     return model, tokenizer, device

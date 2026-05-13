@@ -28,6 +28,7 @@ export TRANSFORMERS_CACHE="${TRANSFORMERS_CACHE:-$HF_HOME/transformers}"
 export HF_DATASETS_CACHE="${HF_DATASETS_CACHE:-$HF_HOME/datasets}"
 export MPLCONFIGDIR="${MPLCONFIGDIR:-$ROOT/.matplotlib-cache}"
 export PYTHONNOUSERSITE="${PYTHONNOUSERSITE:-1}"
+export PYTHONUNBUFFERED="${PYTHONUNBUFFERED:-1}"
 mkdir -p "$TRANSFORMERS_CACHE" "$HF_DATASETS_CACHE" "$MPLCONFIGDIR"
 
 if [[ -x "$ROOT/.conda-env/bin/python" ]]; then
@@ -139,8 +140,14 @@ run_fg() {
 run_fg_all() {
   local gpus_csv="$1"
   shift
-  echo "[gpus $gpus_csv] $*"
-  CUDA_VISIBLE_DEVICES="$gpus_csv" ADAPTIVE_SFT_DATA_PARALLEL="${ADAPTIVE_SFT_DATA_PARALLEL:-1}" "$@"
+  local first_gpu="${gpus_csv%%,*}"
+  if [[ "${ADAPTIVE_SFT_SHARED_DATA_PARALLEL:-0}" == "1" ]]; then
+    echo "[gpus $gpus_csv] $*"
+    CUDA_VISIBLE_DEVICES="$gpus_csv" ADAPTIVE_SFT_DATA_PARALLEL=1 "$@"
+  else
+    echo "[gpu $first_gpu shared] $*"
+    CUDA_VISIBLE_DEVICES="$first_gpu" ADAPTIVE_SFT_DATA_PARALLEL=0 "$@"
+  fi
 }
 
 run_bg() {
@@ -194,7 +201,8 @@ run_pipeline() {
   fi
   echo "Using GPUs: ${GPUS[*]}"
   echo "Shared data/evaluator stages run on GPU $g0."
-  echo "Shared model stages use DataParallel across GPUs: $all_gpus_csv."
+  echo "Shared model stages run on GPU $g0 by default; set ADAPTIVE_SFT_SHARED_DATA_PARALLEL=1 to opt into DataParallel across: $all_gpus_csv."
+  echo "DataParallel is skipped automatically when batch size is smaller than visible GPU count."
   echo "Method stages fan out across GPUs."
 
   run_fg "$g0" "$PYTHON_BIN" -m src.data --config "$CONFIG" $smoke_flag --mode prepare
@@ -287,12 +295,15 @@ case "$MODE" in
     ;;
   full)
     echo "Running mandatory smoke test before full multi-GPU experiment."
-    run_pipeline "smoke"
+    ADAPTIVE_SFT_OUTPUT_DIR="${ADAPTIVE_SFT_SMOKE_OUTPUT_DIR:-outputs/smoke}" run_pipeline "smoke"
     echo "Smoke test passed. Running full multi-GPU experiment."
     run_pipeline "full"
     ;;
+  full_no_smoke|full-nosmoke)
+    run_pipeline "full"
+    ;;
   *)
-    echo "Usage: GPU_IDS=0,1,2,3 bash scripts/run_all_multi_gpu.sh [smoke|full|smoke_noise|full_noise|adaptive|adaptive-smoke]" >&2
+    echo "Usage: GPU_IDS=0,1,2,3 bash scripts/run_all_multi_gpu.sh [smoke|full|full_no_smoke|smoke_noise|full_noise|adaptive|adaptive-smoke]" >&2
     exit 2
     ;;
 esac

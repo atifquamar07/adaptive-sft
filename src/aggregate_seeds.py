@@ -607,6 +607,8 @@ def run(root: str, threshold=None):
             if not records:
                 continue
             method = curve.stem
+            if method == "warmup":
+                continue
             auc_by_method[method].append(_auc(records))
             reached = None
             for record in records:
@@ -619,7 +621,7 @@ def run(root: str, threshold=None):
                 threshold_steps[method].append(reached if reached is not None else None)
 
     final_rows = []
-    for method, losses in sorted(final_by_method.items()):
+    for method, losses in sorted(final_by_method.items(), key=lambda item: _method_sort_key(item[0])):
         aucs = auc_by_method.get(method, [0.0])
         final_rows.append(
             {

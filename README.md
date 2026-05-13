@@ -16,7 +16,9 @@ PYTHONNOUSERSITE=1 PIP_CACHE_DIR="$PWD/.pip-cache" ./.conda-env/bin/python -m pi
 
 The runner automatically uses `./.conda-env/bin/python` when it exists, then `./venv/bin/python`, then system `python`.
 
-The default model is `Qwen/Qwen2.5-0.5B` and the default dataset is `HuggingFaceH4/ultrachat_200k` using `train_sft` when available.
+`requirements.txt` pins PyTorch to the CUDA 12.8 wheel (`torch==2.11.0+cu128`), matching nodes whose `nvidia-smi` reports CUDA 12.8. If GPUs are visible but PyTorch cannot initialize CUDA, the training code now fails fast with a wheel/driver message instead of silently running the model on CPU. Set `ADAPTIVE_SFT_ALLOW_CPU=1` only when a deliberately slow CPU run is intended.
+
+The default model is `Qwen/Qwen2.5-0.5B` and the default dataset is `AI-MO/NuminaMath-CoT` using the `train` split. The dataset contains math reasoning problem/solution pairs in chat-style `messages`, so the experiment remains assistant-only SFT on reasoning traces.
 
 If Hugging Face access needs a token, export `HF_TOKEN` before running or place it in a gitignored local env file:
 
@@ -60,7 +62,7 @@ Full mode always runs smoke mode first and aborts if smoke fails:
 bash scripts/run_all.sh full
 ```
 
-Full mode writes to `outputs/`; smoke mode writes to `outputs/smoke/`.
+Full mode writes to `outputs/`; smoke mode writes to `outputs/smoke/`. The mandatory full-run smoke preflight also writes to `outputs/smoke/` by default, even when `ADAPTIVE_SFT_OUTPUT_DIR` is set for the full run, so smoke data cannot contaminate the full data cache. Set `ADAPTIVE_SFT_SMOKE_OUTPUT_DIR` to override that preflight location.
 
 Noise stress-test modes corrupt only the training pool and keep utility validation/test clean:
 
@@ -92,7 +94,7 @@ GPU_IDS=0,1 bash scripts/run_all_multi_gpu.sh adaptive
 
 ## What Runs
 
-1. Prepare UltraChat data with assistant-only label masking.
+1. Prepare NuminaMath-CoT data with assistant-only label masking.
 2. Train a shared random-SFT LoRA warmup checkpoint.
 3. Collect batch-level utility labels using cosine similarity between candidate-batch LoRA gradients and an averaged utility-validation LoRA gradient.
 4. Train a tiny MLP evaluator on numeric batch features only. By default, raw utility labels are normalized within each collection step so the evaluator learns candidate ordering for a model state.
@@ -108,6 +110,100 @@ GPU_IDS=0,1 bash scripts/run_all_multi_gpu.sh adaptive
    - direct gradient-cosine vs one-step validation-loss improvement sanity check
 7. Evaluate all methods with identical held-out SFT loss code.
 8. Plot losses, selection dynamics, overhead, utility-label histogram, evaluator scatter, imitation diagnostics, and gradient-signal sanity.
+
+## Methodology For New Readers
+
+This experiment asks one question: can SFT improve if the training loop chooses the next batch more carefully than random sampling? Every method trains the same LoRA-adapted language model with the same SFT loss. The methods differ only in how they choose the next batch.
+
+The full data split is:
+
+- `train_pool`: examples that methods may train on
+- `utility_val`: held-out examples used only for batch-selection signals and validation curves
+- `test`: held-out examples used only for final test loss
+
+The model is trained with ordinary next-token SFT on assistant responses. The user prompt is part of the input context, but user, system, and padding tokens are masked out with label `-100`, so only assistant tokens contribute to the loss.
+
+### Step 1: Shared Warmup
+
+The code first loads `Qwen/Qwen2.5-0.5B`, attaches LoRA adapters, and trains those adapters for `training.warmup_steps` random SFT steps. This creates one shared `warmup` checkpoint. All continuation methods start from this exact same checkpoint, which keeps the comparison focused on batch selection rather than different starting weights.
+
+### Step 2: Utility Labels
+
+During normal training, a gradient is the update direction produced by a batch. If a candidate train batch gives a gradient pointing in a similar direction to a validation batch gradient, the experiment treats that candidate as useful.
+
+For each utility-label collection state, the code:
+
+1. Samples several batches from `utility_val`.
+2. Computes LoRA gradients for those validation batches.
+3. Averages them into one validation gradient.
+4. Samples candidate batches from `train_pool`.
+5. Computes each candidate batch's LoRA gradient.
+6. Stores the cosine similarity between candidate gradient and validation gradient as the candidate's utility label.
+
+In formula form:
+
+```text
+utility_label(candidate_batch) =
+  cosine_similarity(candidate_train_gradient, utility_validation_gradient)
+```
+
+A high positive utility label means the train batch would update LoRA weights in a direction similar to the validation set. A near-zero label means the candidate is mostly unrelated to the validation direction. A negative label means the candidate points against that validation direction. These gradients are computed only over trainable LoRA parameters, not all base-model weights.
+
+By default, raw utilities are normalized within each collection step:
+
+```text
+step_zscore_utility = (utility - mean_utility_at_this_step) / std_utility_at_this_step
+```
+
+That target teaches the evaluator to rank candidate batches within the same model state, instead of comparing raw utility magnitudes across different training states.
+
+### Step 3: Evaluator
+
+The evaluator is a small MLP, separate from Qwen. It is trained on records shaped like:
+
+```text
+batch_features -> utility_label
+```
+
+The default features are cheap batch statistics:
+
+- mean SFT loss
+- per-example loss standard deviation
+- mean input length
+- max input length
+- mean assistant-response length
+- mean token entropy
+- mean label confidence
+- training progress fraction
+
+The evaluator's job is to predict which candidate batch is likely to have high gradient utility without computing candidate gradients online. If its dev ranking accuracy, Spearman, or imitation metrics are close to random, then adaptive selection is weak even if the SFT training loop itself is working.
+
+### Step 4: Continuation Methods
+
+After warmup, every method restarts from the same warmup checkpoint and runs `training.continuation_steps` normal SFT optimizer steps. The difference is the batch-selection rule.
+
+`random_sft` samples one random training batch per step and trains on it. This is the baseline for ordinary random SFT.
+
+`static_loss_sft` scores a fixed pool of candidate batches once at the warmup checkpoint using current SFT loss. The default `middle-loss` strategy keeps batches near the middle of the loss distribution, builds a fixed schedule from that selected pool, and trains on that schedule for all continuation steps.
+
+`static_gradient_sft` computes one utility-validation gradient at the warmup checkpoint, scores a fixed pool of train batches by gradient cosine utility, selects the highest-scoring fraction, and trains on that fixed selected pool. It uses gradient utility, but only once before continuation training begins.
+
+`adaptive_utility_sft` performs online batch selection. At every continuation step it samples `K` candidate batches, computes cheap features for each candidate under the current model, uses the evaluator to score them, standardizes the scores, samples one candidate with softmax temperature, and then performs one normal SFT update on the selected batch.
+
+`adaptive_shuffled_scores` is a control for `adaptive_utility_sft`. It computes the same candidate features and evaluator scores, but shuffles the scores before selecting. This keeps the same score distribution and non-uniform softmax behavior while breaking the link between a candidate and its evaluator score. If `adaptive_utility_sft` beats this method, the evaluator's ranking is adding useful information.
+
+`oracle_gradient_sft` is the expensive upper bound. At every continuation step it samples `K` candidate batches, computes the real validation gradient and real candidate gradients, selects the candidate with the best true cosine utility, and trains on that batch. If this method cannot beat `random_sft`, the gradient-utility signal itself is probably not useful in the current setup.
+
+### Step 5: Evaluation
+
+After continuation training, the evaluation code loads each final method checkpoint and computes SFT loss on the held-out `test` split. The main comparison is final `test_loss` and `test_perplexity`, with validation curves and diagnostics used to understand why a method did or did not work.
+
+The most important mental model is:
+
+```text
+same model + same SFT update + same number of continuation steps
+different rule for choosing the next training batch
+```
 
 ## Assistant-Only Loss
 
@@ -155,6 +251,8 @@ Run multiple seeds with:
 ```bash
 SEEDS="1 2 3" bash scripts/run_seeds.sh
 ```
+
+If `SEEDS` is unset, `scripts/run_seeds.sh` reads the `seeds:` list from `configs/default.yaml` or from the config named by `CONFIG`.
 
 Artifacts are written under `outputs/seeds/seed_<N>/`, then aggregated to:
 
@@ -211,7 +309,7 @@ The main comparison is final test SFT loss and perplexity across methods under t
 - `adaptive_utility_sft` beats `adaptive_shuffled_scores`
 - selected-batch loss, length, or predicted utility changes over training
 
-`outputs/evaluator_metrics.json` is the first sanity check. If dev ranking accuracy and Spearman are close to random, the adaptive run should be treated as a failed selector rather than a failed training loop.
+`outputs/evaluator_metrics.json` is the first sanity check. If dev ranking accuracy and Spearman are close to random, the adaptive run should be treated as a failed selector rather than a failed training loop. By default, `adaptive_utility_sft` still uses the evaluator even when it is weak, so the comparison against `adaptive_shuffled_scores` remains a direct diagnostic of whether evaluator predictions matter.
 
 `outputs/evaluator_imitation.json` is the direct selection diagnostic. If top-1 agreement is near `1/K`, pairwise ranking accuracy is near 50%, and Spearman is near zero, the evaluator is not learning useful selection.
 

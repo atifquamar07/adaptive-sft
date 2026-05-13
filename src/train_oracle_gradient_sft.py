@@ -91,11 +91,13 @@ def run(cfg):
     val_indices = []
 
     for step in range(1, steps + 1):
+        gradient_calls_this_step = 0
         if val_grad is None or (step - 1) % refresh == 0:
             val_indices = sample_indices(rng, len(datasets["utility_val"]), val_batch_size)
             val_batch = batch_from_indices(datasets["utility_val"], val_indices, tokenizer, device)
             val_grad, _ = compute_lora_gradient(model, val_batch, device, cfg)
             overhead["gradient_calls"] += 1
+            gradient_calls_this_step += 1
 
         candidates = []
         utilities = []
@@ -104,6 +106,7 @@ def run(cfg):
             batch = batch_from_indices(datasets["train_pool"], indices, tokenizer, device)
             train_grad, grad_stats = compute_lora_gradient(model, batch, device, cfg)
             overhead["gradient_calls"] += 1
+            gradient_calls_this_step += 1
             overhead["candidate_batches_scored"] += 1
             utility = cosine_utility(train_grad, val_grad)
             utilities.append(float(utility))
@@ -127,6 +130,7 @@ def run(cfg):
             "selected_rank": int(_rank_of(utility_scores, selected_idx)),
             "candidate_utility_std": utility_std,
             "candidate_utility_range": float((utility_scores.max() - utility_scores.min()).item()),
+            "gradient_calls_this_step": int(gradient_calls_this_step),
             "gradient_calls_cumulative": int(overhead["gradient_calls"]),
             "train_loss": float(stats["loss"]),
             "selected_gradient_loss": float(selected["gradient_loss"]),

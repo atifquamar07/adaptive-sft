@@ -11,13 +11,31 @@ try:
     from .evaluator import load_trained_evaluator
     from .features import compute_batch_features, vectorize_features
     from .grad_utils import compute_lora_gradient, cosine_utility
-    from .modeling import batch_from_indices, ensure_dirs, load_config, load_lora_model, sample_indices, write_csv, write_json
+    from .modeling import (
+        batch_from_indices,
+        ensure_dirs,
+        load_config,
+        load_lora_model,
+        method_checkpoint_dir,
+        sample_indices,
+        write_csv,
+        write_json,
+    )
 except ImportError:
     from data import load_processed_data
     from evaluator import load_trained_evaluator
     from features import compute_batch_features, vectorize_features
     from grad_utils import compute_lora_gradient, cosine_utility
-    from modeling import batch_from_indices, ensure_dirs, load_config, load_lora_model, sample_indices, write_csv, write_json
+    from modeling import (
+        batch_from_indices,
+        ensure_dirs,
+        load_config,
+        load_lora_model,
+        method_checkpoint_dir,
+        sample_indices,
+        write_csv,
+        write_json,
+    )
 
 
 def _rank_desc(values: List[float]) -> List[int]:
@@ -52,10 +70,21 @@ def _pairwise_accuracy(true_scores: List[float], pred_scores: List[float]) -> fl
     return float(correct / max(total, 1))
 
 
-def run(cfg):
+def _adapter_path_for_checkpoint(cfg, checkpoint_method: str) -> str:
+    if checkpoint_method == "warmup":
+        return cfg["paths"]["warmup_dir"]
+    return method_checkpoint_dir(cfg, checkpoint_method)
+
+
+def run(cfg, checkpoint_method: str = None):
     ensure_dirs(cfg)
     datasets = load_processed_data(cfg)
-    model, tokenizer, device = load_lora_model(cfg, adapter_path=cfg["paths"]["warmup_dir"], train=True)
+    checkpoint_method = checkpoint_method or cfg.get("diagnostics", {}).get("evaluator_imitation_checkpoint_method", "warmup")
+    model, tokenizer, device = load_lora_model(
+        cfg,
+        adapter_path=_adapter_path_for_checkpoint(cfg, checkpoint_method),
+        train=True,
+    )
     evaluator, names, mean, std, _ = load_trained_evaluator(cfg["paths"]["evaluator"])
     rng = random.Random(int(cfg["seed"]) + 801)
     sets = int(cfg.get("diagnostics", {}).get("evaluator_imitation_sets", 32))
@@ -126,6 +155,7 @@ def run(cfg):
     summary = {
         "candidate_count": k,
         "sets": sets,
+        "checkpoint_method": checkpoint_method,
         "random_top1": 1.0 / max(k, 1),
         "top1_agreement": float(np.mean([row["top1_agreement"] for row in per_set])),
         "top3_agreement": float(np.mean([row["top3_agreement"] for row in per_set])),
@@ -148,8 +178,9 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="configs/default.yaml")
     parser.add_argument("--smoke", action="store_true")
+    parser.add_argument("--checkpoint-method", default=None)
     args = parser.parse_args()
-    run(load_config(args.config, smoke=args.smoke))
+    run(load_config(args.config, smoke=args.smoke), checkpoint_method=args.checkpoint_method)
 
 
 if __name__ == "__main__":

@@ -5,17 +5,17 @@ model:
   trust_remote_code: true
 
 paths:
-  output_dir: outputs
-  data_cache_dir: outputs/data/ai_mo_numinamath_cot_sft_masked
-  warmup_dir: outputs/checkpoints/warmup
-  utility_labels: outputs/utility_labels.pt
-  utility_labels_jsonl: outputs/utility_labels.jsonl
-  evaluator: outputs/evaluator.pt
-  evaluator_metrics: outputs/evaluator_metrics.json
-  evaluator_dev_predictions: outputs/evaluator_dev_predictions.csv
-  curves_dir: outputs/curves
-  logs_dir: outputs/logs
-  plots_dir: outputs/plots
+  output_dir: outputs/qwen15b_noise
+  data_cache_dir: outputs/qwen15b_noise/data/ai_mo_numinamath_cot_sft_masked
+  warmup_dir: outputs/qwen15b_noise/checkpoints/warmup
+  utility_labels: outputs/qwen15b_noise/utility_labels.pt
+  utility_labels_jsonl: outputs/qwen15b_noise/utility_labels.jsonl
+  evaluator: outputs/qwen15b_noise/evaluator.pt
+  evaluator_metrics: outputs/qwen15b_noise/evaluator_metrics.json
+  evaluator_dev_predictions: outputs/qwen15b_noise/evaluator_dev_predictions.csv
+  curves_dir: outputs/qwen15b_noise/curves
+  logs_dir: outputs/qwen15b_noise/logs
+  plots_dir: outputs/qwen15b_noise/plots
 
 data:
   dataset_name: AI-MO/NuminaMath-CoT
@@ -25,9 +25,11 @@ data:
   utility_val_size: 1000
   test_size: 1000
   preprocessing_margin: 1000
-  enable_synthetic_noise: false
-  noise_fraction: 0.0
+  enable_synthetic_noise: true
+  noise_fraction: 0.50
   noise_types: [shuffled_response, truncated_response, generic_response, verbose_distractor]
+  # Keep this false for the main experiment. If true, the evaluator can directly
+  # see the synthetic-noise flag, which makes the stress test less realistic.
   feed_noise_feature_to_evaluator: false
 
 lora:
@@ -49,11 +51,14 @@ training:
   save_every: 0
 
 utility:
-  label_steps: [200, 600, 1000, 1400, 1800, 2000]
-  candidates_per_state: 200
+  # More collection states and more candidates per state than default.
+  # This gives the evaluator many more labels and reduces the chance that the
+  # adaptive selector is trained on a tiny/noisy utility-label set.
+  label_steps: [200, 400, 600, 800, 1000, 1200, 1400, 1600, 1800, 2000]
+  candidates_per_state: 500
   candidate_batch_size: 4
   val_batch_size: 4
-  val_batches_per_state: 8
+  val_batches_per_state: 16
   use_gradient_features: false
 
 features:
@@ -61,12 +66,12 @@ features:
 
 evaluator:
   target: step_zscore_utility
-  hidden_size: 64
-  epochs: 80
+  hidden_size: 128
+  epochs: 120
   lr: 1.0e-3
-  batch_size: 64
+  batch_size: 128
   dev_fraction: 0.2
-  max_pairs_per_batch: 2048
+  max_pairs_per_batch: 4096
   loss: pairwise
 
 static_loss:
@@ -82,6 +87,8 @@ static_gradient:
 
 adaptive:
   score_source: auto
+  # Keep false so adaptive_utility_sft remains a real evaluator test.
+  # If this is true, weak evaluators fall back to middle-loss selection.
   fallback_on_weak_evaluator: false
   min_dev_spearman: 0.10
   min_dev_ranking_accuracy: 0.55
@@ -100,13 +107,13 @@ oracle:
   candidate_count: 16
 
 diagnostics:
-  evaluator_imitation_sets: 64
+  evaluator_imitation_sets: 128
   evaluator_imitation_checkpoint_method: warmup
-  gradient_signal_candidates: 32
+  gradient_signal_candidates: 64
   candidate_count: 16
   val_batch_size: 4
 
-seeds: [1, 2, 3]
+seeds: [1, 2, 3, 4, 5]
 seed_aggregation:
   threshold: null
 
@@ -118,28 +125,28 @@ evaluation:
   max_new_tokens: 128
 
 smoke:
-  output_dir: outputs/smoke
+  output_dir: outputs/smoke_qwen15b_noise
   overrides:
     data:
       train_pool_size: 1000
       utility_val_size: 100
       test_size: 100
       preprocessing_margin: 100
-      noise_fraction: 0.25
+      noise_fraction: 0.50
     training:
       warmup_steps: 20
       continuation_steps: 50
       eval_every: 10
       eval_batches: 4
-      micro_batch_size: 2
+      micro_batch_size: 4
     utility:
       label_steps: [20, 35, 50, 70]
-      candidates_per_state: 8
-      candidate_batch_size: 2
-      val_batch_size: 2
-      val_batches_per_state: 4
+      candidates_per_state: 16
+      candidate_batch_size: 4
+      val_batch_size: 4
+      val_batches_per_state: 8
     evaluator:
-      epochs: 20
+      epochs: 40
       batch_size: 16
       max_pairs_per_batch: 512
     static_loss:
@@ -154,9 +161,9 @@ smoke:
     oracle:
       candidate_count: 4
     diagnostics:
-      evaluator_imitation_sets: 8
-      gradient_signal_candidates: 8
+      evaluator_imitation_sets: 16
+      gradient_signal_candidates: 16
       candidate_count: 4
     evaluation:
-      batch_size: 2
+      batch_size: 4
       max_test_batches: 8

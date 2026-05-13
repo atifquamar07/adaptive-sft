@@ -28,6 +28,7 @@ export TRANSFORMERS_CACHE="${TRANSFORMERS_CACHE:-$HF_HOME/transformers}"
 export HF_DATASETS_CACHE="${HF_DATASETS_CACHE:-$HF_HOME/datasets}"
 export MPLCONFIGDIR="${MPLCONFIGDIR:-$ROOT/.matplotlib-cache}"
 export PYTHONNOUSERSITE="${PYTHONNOUSERSITE:-1}"
+export PYTHONUNBUFFERED="${PYTHONUNBUFFERED:-1}"
 mkdir -p "$TRANSFORMERS_CACHE" "$HF_DATASETS_CACHE" "$MPLCONFIGDIR"
 
 if [[ -x "$ROOT/.conda-env/bin/python" ]]; then
@@ -93,12 +94,15 @@ case "$MODE" in
     ;;
   full)
     echo "Running mandatory smoke test before full experiment."
-    run_pipeline "--smoke"
+    ADAPTIVE_SFT_OUTPUT_DIR="${ADAPTIVE_SFT_SMOKE_OUTPUT_DIR:-outputs/smoke}" run_pipeline "--smoke"
     echo "Smoke test passed. Running full experiment."
     run_pipeline ""
     ;;
+  full_no_smoke|full-nosmoke)
+    run_pipeline ""
+    ;;
   *)
-    echo "Usage: bash scripts/run_all.sh [smoke|full|smoke_noise|full_noise|adaptive|adaptive-smoke]" >&2
+    echo "Usage: bash scripts/run_all.sh [smoke|full|full_no_smoke|smoke_noise|full_noise|adaptive|adaptive-smoke]" >&2
     exit 2
     ;;
 esac

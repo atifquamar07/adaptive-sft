@@ -12,6 +12,17 @@ except ImportError:
     from modeling import ensure_dirs, load_config, load_tokenizer
 
 
+def _text_field(example: Dict[str, Any], *names: str) -> str:
+    for name in names:
+        value = example.get(name)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return ""
+
+
 def _messages_from_example(example: Dict[str, Any]) -> List[Dict[str, str]]:
     messages = example.get("messages")
     if isinstance(messages, list) and messages:
@@ -23,7 +34,23 @@ def _messages_from_example(example: Dict[str, Any]) -> List[Dict[str, str]]:
                 cleaned.append({"role": role, "content": content})
         if cleaned:
             return cleaned
-    prompt = str(example.get("prompt", ""))
+
+    paired_fields = [
+        (("problem", "question", "prompt"), ("solution", "answer", "response", "completion", "output")),
+        (("instruction", "query"), ("output", "response", "completion", "answer", "solution")),
+        (("input",), ("output", "response", "completion")),
+    ]
+    for prompt_names, response_names in paired_fields:
+        prompt = _text_field(example, *prompt_names)
+        response = _text_field(example, *response_names)
+        if prompt and response:
+            instruction = _text_field(example, "instruction")
+            extra_input = _text_field(example, "input")
+            if instruction and extra_input and prompt == instruction:
+                prompt = f"{instruction}\n\n{extra_input}"
+            return [{"role": "user", "content": prompt}, {"role": "assistant", "content": response}]
+
+    prompt = _text_field(example, "prompt", "problem", "question", "instruction", "query", "input")
     return [{"role": "user", "content": prompt}]
 
 

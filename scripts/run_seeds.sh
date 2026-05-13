@@ -32,15 +32,22 @@ else
 fi
 
 MODE="${MODE:-full}"
-SEEDS="${SEEDS:-1 2 3}"
+CONFIG="${CONFIG:-configs/default.yaml}"
+RUNNER="${RUNNER:-scripts/run_all.sh}"
+if [[ -n "${SEEDS:-}" ]]; then
+  SEED_LIST="$SEEDS"
+else
+  SEED_LIST="$("$PYTHON_BIN" -c 'import sys, yaml; cfg = yaml.safe_load(open(sys.argv[1], encoding="utf-8")); print(" ".join(str(s) for s in cfg.get("seeds", [1, 2, 3])))' "$CONFIG")"
+fi
 ROOT_OUT="${ROOT_OUT:-outputs/seeds}"
 THRESHOLD="${THRESHOLD:-}"
 
 mkdir -p "$ROOT_OUT"
-for seed in $SEEDS; do
+export CONFIG
+for seed in $SEED_LIST; do
   out_dir="$ROOT_OUT/seed_$seed"
-  echo "Running seed $seed -> $out_dir"
-  ADAPTIVE_SFT_SEED="$seed" ADAPTIVE_SFT_OUTPUT_DIR="$out_dir" bash scripts/run_all.sh "$MODE"
+  echo "Running seed $seed -> $out_dir with $RUNNER"
+  ADAPTIVE_SFT_SEED="$seed" ADAPTIVE_SFT_OUTPUT_DIR="$out_dir" bash "$RUNNER" "$MODE"
 done
 
 if [[ -n "$THRESHOLD" ]]; then

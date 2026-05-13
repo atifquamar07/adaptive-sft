@@ -52,13 +52,16 @@ def run(cfg):
     batch_size = int(cfg["training"]["micro_batch_size"])
     overhead = init_overhead(method)
     start_time = time.time()
+    print(f"warmup starting steps={steps} batch_size={batch_size} device={device}", flush=True)
 
     for step in range(1, steps + 1):
+        if step == 1:
+            print("warmup entering first optimizer step", flush=True)
         batch, _ = sample_batch(datasets["train_pool"], tokenizer, device, rng, batch_size)
         stats = train_on_batch(model, optimizer, scaler, batch, cfg, device)
         overhead["optimizer_steps"] += 1
         if step % int(cfg["training"].get("log_every", 20)) == 0 or step == 1:
-            print(f"warmup step={step} loss={stats['loss']:.4f} active_tokens={stats['active_tokens']}")
+            print(f"warmup step={step} loss={stats['loss']:.4f} active_tokens={stats['active_tokens']}", flush=True)
         maybe_eval_curve(model, datasets["utility_val"], tokenizer, cfg, method, step, force=False)
 
     maybe_eval_curve(model, datasets["utility_val"], tokenizer, cfg, method, steps, force=True)

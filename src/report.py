@@ -70,20 +70,30 @@ def run(cfg):
             + f" (adaptive={adaptive_loss:.6f}, shuffled={shuffled_loss:.6f})"
         )
     if imitation:
+        top1 = float(imitation.get("top1_agreement", 0.0))
+        random_top1 = 1.0 / max(k, 1)
+        pairwise = float(imitation.get("pairwise_ranking_accuracy", 0.0))
+        spearman = float(imitation.get("mean_spearman", 0.0))
+        exceeds_random = top1 > random_top1 and pairwise > 0.55 and spearman > 0.0
         lines.append(
             "C. Evaluator imitation: "
-            f"top1={imitation.get('top1_agreement', 0.0):.3f} vs random={1.0 / max(k, 1):.3f}, "
-            f"pairwise={imitation.get('pairwise_ranking_accuracy', 0.0):.3f}, "
-            f"spearman={imitation.get('mean_spearman', 0.0):.3f}"
+            + ("yes" if exceeds_random else "no")
+            + f" (top1={top1:.3f} vs random={random_top1:.3f}, "
+            f"pairwise={pairwise:.3f}, spearman={spearman:.3f})"
         )
     else:
         lines.append("C. Evaluator imitation: missing diagnostic.")
     if adaptive_stats:
+        non_uniform = (
+            adaptive_stats["mean_selection_entropy"] < adaptive_stats["uniform_entropy"]
+            and adaptive_stats["mean_selected_rank"] < adaptive_stats["random_mean_rank"]
+        )
         lines.append(
             "D. Adaptive non-uniformity: "
-            f"entropy={adaptive_stats['mean_selection_entropy']:.3f} vs uniform={adaptive_stats['uniform_entropy']:.3f}, "
+            + ("yes" if non_uniform else "no")
+            + f" (entropy={adaptive_stats['mean_selection_entropy']:.3f} vs uniform={adaptive_stats['uniform_entropy']:.3f}, "
             f"selected_rank={adaptive_stats['mean_selected_rank']:.2f} vs random={adaptive_stats['random_mean_rank']:.2f}, "
-            f"score_sources={adaptive_stats['score_sources']}"
+            f"score_sources={adaptive_stats['score_sources']})"
         )
     else:
         lines.append("D. Adaptive non-uniformity: missing adaptive logs.")
